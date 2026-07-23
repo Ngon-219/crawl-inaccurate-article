@@ -164,11 +164,6 @@ under the License.
 
         <dependency>
             <groupId>org.apache.stormcrawler</groupId>
-            <artifactId>stormcrawler-selenium</artifactId>
-            <version>${stormcrawler.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.stormcrawler</groupId>
             <artifactId>stormcrawler-opensearch</artifactId>
             <version>${stormcrawler.version}</version>
         </dependency>

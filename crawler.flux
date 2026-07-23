@@ -26,6 +26,9 @@ bolts:
   - id: "parse"
     className: "org.apache.stormcrawler.bolt.JSoupParserBolt"
     parallelism: 2
+  - id: "redirect"
+    className: "org.apache.stormcrawler.protocol.playwright.bolt.JsRenderingRedirectionBolt"
+    parallelism: 1
   - id: "index"
     className: "org.inaccurate.crawler.MongoIndexerBolt"       # đổi đúng package thật của bạn
     parallelism: 1
@@ -47,8 +50,13 @@ streams:
     to: "parse"
     grouping: { type: LOCAL_OR_SHUFFLE }
 
-  # THIẾU DÒNG NÀY — nối parse tới index
+  # parse -> redirect: JsRenderingRedirectionBolt reschedules CSR pages
+  # (fetch.with=playwright) for a Playwright refetch, and passes everything
+  # else straight through to the indexer.
   - from: "parse"
+    to: "redirect"
+    grouping: { type: LOCAL_OR_SHUFFLE }
+  - from: "redirect"
     to: "index"
     grouping: { type: LOCAL_OR_SHUFFLE }
 
@@ -62,7 +70,11 @@ streams:
     to: "status"
     grouping: { type: FIELDS, streamId: "status", args: ["url"] }
 
-  # THIẾU DÒNG NÀY — index cũng phải báo status
+  # redirect reschedules CSR URLs via the status stream (Status.FETCHED)
+  - from: "redirect"
+    to: "status"
+    grouping: { type: FIELDS, streamId: "status", args: ["url"] }
+
   - from: "index"
     to: "status"
     grouping: { type: FIELDS, streamId: "status", args: ["url"] }

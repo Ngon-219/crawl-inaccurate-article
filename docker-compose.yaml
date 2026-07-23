@@ -1,11 +1,11 @@
 services:
   zookeeper:
-    image: hub.vtcc.vn:8989/zookeeper:3.9.3
+    image: zookeeper:3.9.3
     container_name: zookeeper
     restart: always
 
   nimbus:
-    image: hub.vtcc.vn:8989/storm:latest
+    image: storm:latest
     container_name: nimbus
     hostname: nimbus
     command: storm nimbus
@@ -14,7 +14,7 @@ services:
     restart: always
 
   supervisor:
-    image: hub.vtcc.vn:8989/storm:latest
+    image: storm:latest
     container_name: supervisor
     command: storm supervisor -c worker.childopts=-Xmx2g
     depends_on:
@@ -23,7 +23,7 @@ services:
     restart: always
 
   ui:
-    image: hub.vtcc.vn:8989/storm:latest
+    image: storm:latest
     container_name: ui
     command: storm ui
     depends_on:
@@ -33,14 +33,14 @@ services:
       - "8080:8080"
 
   urlfrontier:
-    image: hub.vtcc.vn:8989/crawlercommons/url-frontier:latest
+    image: crawlercommons/url-frontier:latest
     container_name: urlfrontier
     restart: always
     ports:
       - "7071:7071"
 
   mongo:
-    image: hub.vtcc.vn:8989/mongo:latest
+    image: mongo:latest
     container_name: mongoDb
     restart: always
     ports:
@@ -51,29 +51,12 @@ services:
     volumes:
       - mongo_data:/data/db
 
-  selenium-hub:
-    image: hub.vtcc.vn:8989/selenium/hub:4.19.0
-    ports:
-      - "4442:4442"
-      - "4443:4443"
-      - "4444:4444"
-    environment:
-      - GRID_MAX_SESSION=10
-      - GRID_TIMEOUT=60
-
-  chrome:
-    image: hub.vtcc.vn:8989/selenium/node-chrome:4.19.0
-    shm_size: 2gb
-    depends_on:
-      - selenium-hub
-    environment:
-      - SE_EVENT_BUS_HOST=selenium-hub
-      - SE_EVENT_BUS_PUBLISH_PORT=4442
-      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
-      - SE_NODE_MAX_SESSIONS=4
-      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
-    deploy:
-      replicas: 2
+  # NOTE: no browser service here on purpose.
+  # The Playwright protocol runs an EMBEDDED headless Chromium inside the Storm
+  # worker (see crawler-conf.yaml). For `storm local` the browser lives in the
+  # host's Playwright cache (installed by restart-crawler.sh); for K8s it is
+  # baked into the worker image. A session-pooling proxy like browserless is
+  # NOT compatible with StormCrawler's long-lived browser connection.
 
 volumes:
   mongo_data:

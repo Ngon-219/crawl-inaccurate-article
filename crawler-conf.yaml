@@ -23,7 +23,7 @@ config:
   topology.workers: 1
   topology.message.timeout.secs: 300
   topology.max.spout.pending: 1000
-  topology.debug: true
+  topology.debug: false
 
   fetcher.threads.number: 50
   fetcher.server.delay: 0.0
@@ -54,9 +54,11 @@ config:
 #   - isFeed
 #   - "needs_headless"
 
-  metadata.transfer:
-    - "needs_headless"
-    - "is_temporary_error"
+  # Metadata to copy onto discovered outlinks. Kept empty on purpose: the
+  # SSR/CSR routing flag (fetch.with) must NOT be inherited by child URLs —
+  # each URL is detected on its own content.
+  # metadata.transfer:
+  #  - customMetadataName
 
   # Agent name info - given here as an example. Do not be an anonynmous coward, use your real information!
   # The full user agent value sent as part of the HTTP requests
@@ -134,12 +136,10 @@ config:
   textextractor.no.text: false
 
   # text extraction for JSoupParserBolt
-  textextractor.include.pattern:
-   - DIV[id="maincontent"]
-   - DIV[itemprop="articleBody"]
-   - ARTICLE
-   - DIV[id="desktop-in-article"]
-   - DIV[data-slot="content"]
+  # No include.pattern on purpose: extract the full page text on any site.
+  # This keeps the crawler generic (works for arbitrary sites, not just news
+  # articles) and lets JsRenderingDetector's thin-content heuristic work
+  # correctly. Add site-specific include patterns only if you narrow the scope.
 
   textextractor.exclude.tags:
    - STYLE
@@ -201,10 +201,10 @@ config:
 #  http.proxy.port: 3128
 #  http.proxy.username: "ngonvc"
 #  http.proxy.password: "Viettel219@"
-  http.proxy.manager: "org.apache.stormcrawler.proxy.MultiProxyManager"
-  http.proxy.file: "proxies.txt"
-  http.proxy.rotation: "ROUND_ROBIN"
-  http.trust.everything: true
+  # http.proxy.manager: "org.apache.stormcrawler.proxy.MultiProxyManager"
+  # http.proxy.file: "proxies.txt"
+  # http.proxy.rotation: "ROUND_ROBIN"
+  # http.trust.everything: true
 
   http.timeout: 30000
   http.robots.timeout: 30000
@@ -229,38 +229,70 @@ config:
 #    - "strict"
   signer.class: "org.apache.stormcrawler.util.TextProfileSignature"
 
-  http.protocol.implementation: "org.inaccurate.crawler.AutoDetectProtocol"
-  https.protocol.implementation: "org.inaccurate.crawler.AutoDetectProtocol"
+  # ------------------------------------------------------------------
+  # SSR + CSR auto-routing (StormCrawler 3.6 built-ins)
+  #
+  # DelegatorProtocol picks a sub-protocol per URL based on metadata:
+  #   - if fetch.with=playwright  -> render with Playwright (headless browser)
+  #   - otherwise                 -> plain HTTP via okhttp (cheap, good for SSR)
+  #
+  # The flag is set by JsRenderingDetector (parsefilters.json) when a page
+  # looks client-side rendered, persisted in URLFrontier, and consumed on the
+  # next fetch. See JsRenderingRedirectionBolt in crawler.flux for the refetch.
+  # ------------------------------------------------------------------
+  http.protocol.implementation: "org.apache.stormcrawler.protocol.DelegatorProtocol"
+  https.protocol.implementation: "org.apache.stormcrawler.protocol.DelegatorProtocol"
 
-  # Class thật sự dùng bên trong AutoDetectProtocol
-  autodetect.http.impl: "org.apache.stormcrawler.protocol.okhttp.HttpProtocol"
-  autodetect.selenium.impl: "org.apache.stormcrawler.protocol.selenium.RemoteDriverProtocol"
+  protocol.delegator.config:
+    - className: "org.apache.stormcrawler.protocol.playwright.HttpProtocol"
+      filters:
+        render: "playwright"
+    # default (must be last and have no filters)
+    - className: "org.apache.stormcrawler.protocol.okhttp.HttpProtocol"
 
-  # Ngưỡng để coi là "nội dung quá ít -> nghi CSR"
-  autodetect.min.text.length: 200
+  # Routing metadata key/value used by JsRenderingDetector (set on CSR pages)
+  # and JsRenderingRedirectionBolt (consumes it). NOTE: the key must NOT contain
+  # a dot — DefaultScheduler parses `fetchInterval.<key>=<value>` with a regex
+  # that treats a dotted segment as a Status enum name (the built-in default
+  # `fetch.with` would be parsed as Status "fetch" and crash the worker).
+  playwright.redirect.metadata.key: "render"
+  playwright.redirect.metadata.value: "playwright"
 
-  # Nhớ theo domain để khỏi thử lại HTTP mỗi URL (khuyến nghị bật)
-  autodetect.cache.host: true
+  # Playwright runs an EMBEDDED headless Chromium inside the worker process.
+  # StormCrawler holds one long-lived browser connection for the bolt's whole
+  # lifetime, which is incompatible with session-pooling proxies like
+  # browserless (they kill the connection on a per-job timeout -> TargetClosedError).
+  # Embedded launch has no such timeout and guarantees the browser version
+  # matches the bundled driver.
+  #   - Local dev: `playwright install chromium` puts the browser in the host
+  #     cache (restart-crawler.sh does this automatically).
+  #   - K8s/prod: bake the browser into the worker image (RUN playwright install
+  #     --with-deps chromium) so every worker pod has it.
+  # To use a remote browser pool instead, set playwright.remote.ws to a real
+  # Playwright server (`playwright run-server`) whose version matches 1.60.0 —
+  # do NOT point playwright.cdp.url at browserless.
+  # playwright.cdp.url: "http://localhost:9222"
+  playwright.page.actions.config.file: "playwright-actions.json"
+  playwright.load.event: "load"
+  # Don't download heavy assets we don't need for text extraction.
+  playwright.skip.resource.types:
+    - image
+    - media
+    - font
 
-  # Selenium vẫn cần cấu hình đầy đủ như trước vì AutoDetectProtocol gọi tới nó
-  selenium.addresses: "http://localhost:4444/wd/hub"
-  selenium.instances.num: 4
+  # Revisit cadence (minutes) for pages flagged render=playwright. This value is
+  # coupled two ways because the `render` flag persists on the URL:
+  #   - it is how soon a newly-detected CSR page gets its first Playwright render
+  #     (the redirect bolt reschedules the okhttp stub with this interval), and
+  #   - it is how often that page is re-rendered thereafter.
+  # 5 min = CSR pages render promptly during a crawl without hammering. Raise it
+  # (e.g. 1440 = daily) once your initial crawl is done to cut re-render load.
+  # NOTE: the metadata key must stay dot-free (see playwright.redirect.metadata.key
+  # above) — DefaultScheduler parses fetchInterval.<key>=<value> with a regex that
+  # would treat a dotted segment as a Status enum and crash the worker.
+  fetchInterval.render=playwright: 5
 
-  # Format MỚI (thay thế 3 key cũ: selenium.implicitlyWait, selenium.pageLoadTimeout, selenium.setScriptTimeout)
-  selenium.timeouts:
-    implicit: 5000
-    pageLoad: 30000
-    script: 15000
-
-  selenium.capabilities:
-    browserName: "chrome"
-    pageLoadStrategy: "eager"
-    "goog:chromeOptions":
-      args:
-        - "--headless=new"
-        - "--no-sandbox"
-        - "--disable-dev-shm-usage"
-
+  # Persist the routing decision so it survives to the next fetch.
   metadata.persist:
-    - "protocol.use.selenium"
-    - "protocol.autodetect.reason"
+    - "render"
+    - "render.reason"
