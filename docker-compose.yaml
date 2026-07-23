@@ -1,0 +1,79 @@
+services:
+  zookeeper:
+    image: hub.vtcc.vn:8989/zookeeper:3.9.3
+    container_name: zookeeper
+    restart: always
+
+  nimbus:
+    image: hub.vtcc.vn:8989/storm:latest
+    container_name: nimbus
+    hostname: nimbus
+    command: storm nimbus
+    depends_on:
+      - zookeeper
+    restart: always
+
+  supervisor:
+    image: hub.vtcc.vn:8989/storm:latest
+    container_name: supervisor
+    command: storm supervisor -c worker.childopts=-Xmx2g
+    depends_on:
+      - nimbus
+      - zookeeper
+    restart: always
+
+  ui:
+    image: hub.vtcc.vn:8989/storm:latest
+    container_name: ui
+    command: storm ui
+    depends_on:
+      - nimbus
+    restart: always
+    ports:
+      - "8080:8080"
+
+  urlfrontier:
+    image: hub.vtcc.vn:8989/crawlercommons/url-frontier:latest
+    container_name: urlfrontier
+    restart: always
+    ports:
+      - "7071:7071"
+
+  mongo:
+    image: hub.vtcc.vn:8989/mongo:latest
+    container_name: mongoDb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    volumes:
+      - mongo_data:/data/db
+
+  selenium-hub:
+    image: hub.vtcc.vn:8989/selenium/hub:4.19.0
+    ports:
+      - "4442:4442"
+      - "4443:4443"
+      - "4444:4444"
+    environment:
+      - GRID_MAX_SESSION=10
+      - GRID_TIMEOUT=60
+
+  chrome:
+    image: hub.vtcc.vn:8989/selenium/node-chrome:4.19.0
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_MAX_SESSIONS=4
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+    deploy:
+      replicas: 2
+
+volumes:
+  mongo_data:
