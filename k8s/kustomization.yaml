@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: crawler
+
+# Applied in this order by kubectl; the numeric filename prefixes also encode the
+# intended bring-up order (config -> stateful backends -> storm -> jobs).
+resources:
+  - 00-namespace.yaml
+  - 01-secrets.yaml
+  - 02-storm-config.yaml
+  - 03-crawler-config.yaml
+  - 10-zookeeper.yaml
+  - 11-mongodb.yaml
+  - 12-urlfrontier.yaml
+  - 20-nimbus.yaml
+  - 21-supervisor.yaml
+  - 22-storm-ui.yaml
+  - 30-seed-job.yaml
+  - 31-submit-topology-job.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: storm-crawler
+    includeSelectors: false   # don't inject into immutable Deployment/StatefulSet selectors
+
+images:
+  - name: inaccurate-article-crawler
+    newTag: "1.0"

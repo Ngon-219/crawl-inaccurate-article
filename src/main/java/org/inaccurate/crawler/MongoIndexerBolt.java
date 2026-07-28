@@ -27,11 +27,28 @@ public class MongoIndexerBolt extends BaseRichBolt {
     public void prepare(Map<String, Object> stormConf, TopologyContext context, OutputCollector collector) {
         this.collector = collector;
 
-        // Đổi "localhost" -> tên service Docker "mongo" (khớp docker-compose.yml)
-        this.mongoClient = MongoClients.create("mongodb://admin:password123@localhost:27017/");
+        // Connection URI resolution order (so the same jar runs in local dev,
+        // docker-compose and Kubernetes without a rebuild):
+        //   1. Storm config key "mongodb.uri"  (injected via crawler-conf.yaml)
+        //   2. environment variable MONGO_URI  (injected via the pod spec/Secret)
+        //   3. localhost default               (bare-metal / IDE run)
+        String uri = null;
+        Object confUri = stormConf.get("mongodb.uri");
+        if (confUri != null && !confUri.toString().isBlank()) {
+            uri = confUri.toString();
+        } else if (System.getenv("MONGO_URI") != null && !System.getenv("MONGO_URI").isBlank()) {
+            uri = System.getenv("MONGO_URI");
+        } else {
+            uri = "mongodb://admin:password123@localhost:27017/";
+        }
 
-        MongoDatabase database = mongoClient.getDatabase("crawler_db");
-        this.collection = database.getCollection("articles");
+        String dbName = stormConf.getOrDefault("mongodb.database", "crawler_db").toString();
+        String collName = stormConf.getOrDefault("mongodb.collection", "articles").toString();
+
+        this.mongoClient = MongoClients.create(uri);
+
+        MongoDatabase database = mongoClient.getDatabase(dbName);
+        this.collection = database.getCollection(collName);
 
         IndexOptions indexOptions = new IndexOptions().unique(true);
         this.collection.createIndex(new Document("url", 1), indexOptions);

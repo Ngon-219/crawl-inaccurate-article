@@ -1,0 +1,58 @@
+# One-shot Job: inject the seed URLs into URLFrontier.
+#
+# WHY a Job (not a long-running pod): seeding is a run-once action, not a
+# service. A Job runs the container to completion and stops. Re-running it is
+# safe/idempotent — URLFrontier de-duplicates URLs already present.
+#
+# Equivalent of the local step:
+#   java -cp app.jar crawlercommons.urlfrontier.client.Client PutURLs -f seeds.txt
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-urls
+  namespace: crawler
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: seed-urls
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Don't inject until the frontier is actually accepting gRPC.
+        - name: wait-for-urlfrontier
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "waiting for urlfrontier:7071 ..."
+              until nc -z urlfrontier 7071; do sleep 3; done
+              echo "urlfrontier is up"
+      containers:
+        - name: seed
+          image: inaccurate-article-crawler:1.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - java
+            - -cp
+            - /crawler/app.jar
+            - crawlercommons.urlfrontier.client.Client
+            - --host
+            - urlfrontier          # -t/--host : the URLFrontier Service name
+            - --port
+            - "7071"
+            - PutURLs
+            - -f
+            - /seeds/seeds.txt
+          volumeMounts:
+            - name: seeds
+              mountPath: /seeds
+      volumes:
+        - name: seeds
+          configMap:
+            name: crawler-config
+            items:
+              - key: seeds.txt
+                path: seeds.txt

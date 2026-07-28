@@ -1,0 +1,73 @@
+# Storm Nimbus — the cluster master. Accepts topology submissions, stores the
+# topology JAR + config, and hands assignments to supervisors via Zookeeper.
+#
+# WHY StatefulSet: Nimbus persists submitted topology code and serialized conf
+# under storm.local.dir/nimbus. Supervisors download the JAR from Nimbus; if
+# Nimbus restarts onto an empty disk it can no longer serve that code and the
+# running topology breaks. So it needs a durable PVC. It must also be reachable
+# at a fixed address (nimbus.seeds = nimbus-0.nimbus...), which the stable
+# StatefulSet pod DNS provides. Modern Storm supports multiple nimbus nodes for
+# HA (raise replicas), electing a leader via Zookeeper — another reason the
+# ordered, individually-addressable identity of a StatefulSet fits.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nimbus
+  namespace: crawler
+  labels:
+    app: nimbus
+spec:
+  clusterIP: None
+  selector:
+    app: nimbus
+  ports:
+    - name: thrift
+      port: 6627
+      targetPort: 6627
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nimbus
+  namespace: crawler
+spec:
+  serviceName: nimbus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nimbus
+  template:
+    metadata:
+      labels:
+        app: nimbus
+    spec:
+      containers:
+        - name: nimbus
+          image: storm:2.8.8       # MUST match <storm.version> in pom.xml (storm-client is 'provided')
+          args: ["storm", "nimbus"]
+          ports:
+            - { containerPort: 6627, name: thrift }
+          volumeMounts:
+            - name: storm-config
+              mountPath: /conf/storm.yaml
+              subPath: storm.yaml
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket: { port: 6627 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { memory: "1Gi" }
+      volumes:
+        - name: storm-config
+          configMap:
+            name: storm-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 5Gi } }

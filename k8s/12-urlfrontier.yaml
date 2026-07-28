@@ -1,0 +1,70 @@
+# URLFrontier — the crawl frontier: the authoritative record of every URL's
+# state (discovered / queued / fetched / next-fetch-time). The spout pulls the
+# next URLs from here and the StatusUpdaterBolt writes outcomes back.
+#
+# WHY StatefulSet: this is the crawl's memory. Lose it and the crawler forgets
+# what it already fetched and re-crawls everything (or stalls). RocksDB (the
+# default backend) writes to disk, so we give it a PVC and address it by a
+# stable DNS name that the topology config points at (urlfrontier.host).
+#
+# By default the image writes RocksDB to ./rocksdb inside the container (lost on
+# restart). We pass rocksdb.path=/data/rocksdb so it lands on the PVC.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: urlfrontier
+  namespace: crawler
+  labels:
+    app: urlfrontier
+spec:
+  clusterIP: None
+  selector:
+    app: urlfrontier
+  ports:
+    - name: grpc
+      port: 7071
+      targetPort: 7071
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: urlfrontier
+  namespace: crawler
+spec:
+  serviceName: urlfrontier
+  replicas: 1
+  selector:
+    matchLabels:
+      app: urlfrontier
+  template:
+    metadata:
+      labels:
+        app: urlfrontier
+    spec:
+      containers:
+        - name: urlfrontier
+          image: crawlercommons/url-frontier:2.4
+          # Extra args are passed to URLFrontierServer as key=value options.
+          # rocksdb is the default backend; we only redirect its path onto the PVC.
+          args:
+            - "rocksdb.path=/data/rocksdb"
+          ports:
+            - containerPort: 7071
+              name: grpc
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            tcpSocket:
+              port: 7071
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { memory: "2Gi" }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 10Gi } }

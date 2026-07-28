@@ -51,5 +51,5 @@ It is best to run the topology with `storm jar` to benefit from the Storm UI and
 # List url in frontier
 
 ``` sh
-java -cp target/inaccurate-article-crawler-1.0-SNAPSHOT.jar crawlercommons.urlfrontier.client.Client GetURLs -m 100
+java -cp target/inaccurate-article-crawler-1.0-SNAPSHOT.jar crawlercommons.urlfrontier.client.Client GetURLs -m 100 a
 ```

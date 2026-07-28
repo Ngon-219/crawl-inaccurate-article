@@ -1,0 +1,133 @@
+# Kubernetes copy of crawler-conf.yaml. This is the "config as data" pattern:
+# the topology JAR is immutable and identical across environments, while the
+# environment-specific values live here and are mounted into the submit Job.
+#
+# It is the SAME file as ../crawler-conf.yaml with exactly three changes for the
+# cluster, all marked "# K8S:" below:
+#   1. urlfrontier.host -> the URLFrontier Service DNS name
+#   2. mongodb.uri / mongodb.database / mongodb.collection added (read by
+#      MongoIndexerBolt). The URI here is a placeholder; the real one is injected
+#      into the worker env as MONGO_URI from the mongo-credentials Secret, which
+#      MongoIndexerBolt prefers. Keeping a key here documents the contract.
+# If you change ../crawler-conf.yaml, mirror the change here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crawler-config
+  namespace: crawler
+data:
+  crawler-conf.yaml: |
+    config:
+      topology.workers: 1
+      topology.message.timeout.secs: 300
+      topology.max.spout.pending: 1000
+      topology.debug: false
+
+      fetcher.threads.number: 50
+      fetcher.server.delay: 0.0
+
+      topology.worker.childopts: "-Xmx2g -Djava.net.preferIPv4Stack=true"
+
+      topology.kryo.register:
+        - org.apache.stormcrawler.Metadata
+        - org.apache.stormcrawler.persistence.Status
+
+      http.agent.name: "inaccurate-article-crawler"
+      http.agent.version: "1.0"
+      http.agent.description: "crawler for inaccurate article"
+      http.agent.url: "http://localhost"
+      http.agent.email: "vucongngon219@gmail.com"
+
+      http.robots.file: ""
+      robots.noindex.policy: "ignore"
+      http.content.limit: -1
+
+      # K8S: point at the URLFrontier headless Service (was "localhost")
+      urlfrontier.host: "urlfrontier-0.urlfrontier.crawler.svc.cluster.local"
+      urlfrontier.port: 7071
+      urlfrontier.max.buckets: 100
+      urlfrontier.max.urls.per.bucket: 1000
+
+      # K8S: MongoDB sink. MongoIndexerBolt resolves the URI in this order:
+      #   stormConf["mongodb.uri"] -> env MONGO_URI -> localhost default.
+      # The env var (from the mongo-credentials Secret) is the real source of
+      # truth; this key is a documented fallback.
+      mongodb.uri: "mongodb://admin:password123@mongodb-0.mongodb.crawler.svc.cluster.local:27017/?authSource=admin"
+      mongodb.database: "crawler_db"
+      mongodb.collection: "articles"
+
+      sitemap.discovery: false
+
+      parsefilters.config.file: "parsefilters.json"
+      urlfilters.config.file: "urlfilters.json"
+      jsoup.filters.config.file: "jsoupfilters.json"
+
+      fetchInterval.default: 10080
+      fetchInterval.fetch.error: 0
+      fetchInterval.error: 120
+
+      textextractor.no.text: false
+      textextractor.exclude.tags:
+        - STYLE
+        - SCRIPT
+
+      jsoup.treat.non.html.as.error: false
+      parser.mimetype.whitelist:
+        - application/.+word.*
+        - application/.+excel.*
+        - application/.+powerpoint.*
+        - application/.*pdf.*
+      parse.tika.config.file: "tika-config.xml"
+
+      indexer.url.fieldname: "url"
+      indexer.text.fieldname: "content"
+      indexer.canonical.name: "canonical"
+      indexer.md.mapping:
+        - parse.title=title
+        - parse.keywords=keywords
+        - parse.description=description
+        - domain
+        - format
+
+      http.timeout: 30000
+      http.robots.timeout: 30000
+      http.min.delay: 2000
+
+      topology.metrics.consumer.register:
+        - class: "org.apache.storm.metric.LoggingMetricsConsumer"
+          parallelism.hint: 1
+
+      http.headers:
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        "Accept-Language": "en-US,en;q=0.5"
+        "Referer": "https://www.google.com/"
+        "Upgrade-Insecure-Requests": "1"
+
+      parser.extract.links: true
+      metadata.track.depth: true
+      signer.class: "org.apache.stormcrawler.util.TextProfileSignature"
+
+      # --- SSR + CSR auto-routing (see ../crawler-conf.yaml for the full notes)
+      http.protocol.implementation: "org.apache.stormcrawler.protocol.DelegatorProtocol"
+      https.protocol.implementation: "org.apache.stormcrawler.protocol.DelegatorProtocol"
+      protocol.delegator.config:
+        - className: "org.apache.stormcrawler.protocol.playwright.HttpProtocol"
+          filters:
+            render: "playwright"
+        - className: "org.apache.stormcrawler.protocol.okhttp.HttpProtocol"
+
+      playwright.redirect.metadata.key: "render"
+      playwright.redirect.metadata.value: "playwright"
+      playwright.page.actions.config.file: "playwright-actions.json"
+      playwright.load.event: "load"
+      playwright.skip.resource.types:
+        - image
+        - media
+        - font
+      fetchInterval.render=playwright: 5
+
+      metadata.persist:
+        - "render"
+        - "render.reason"
+  seeds.txt: |
+    https://vpcp.dichvucong.gov.vn/

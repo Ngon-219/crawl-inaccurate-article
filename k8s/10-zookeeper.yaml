@@ -1,0 +1,78 @@
+# Zookeeper — Storm's coordination store (leader election, assignments, heartbeats).
+#
+# WHY StatefulSet (not Deployment):
+#   * Stable network identity: Storm daemons are configured with the exact DNS
+#     name "zookeeper-0.zookeeper...". A Deployment gives random pod names and a
+#     load-balanced ClusterIP — wrong for a quorum member you must address directly.
+#   * Stable storage: ZK persists the transaction log + snapshots. That state must
+#     survive a pod restart, so each replica owns a PVC via volumeClaimTemplates.
+#   * Ordered identity: to grow to a 3-node ensemble you need myid 1..N pinned to
+#     the same volume every time — exactly what ordinal pod identity gives you.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: crawler
+  labels:
+    app: zookeeper
+spec:
+  clusterIP: None          # headless -> DNS returns pod IPs, gives stable per-pod names
+  selector:
+    app: zookeeper
+  ports:
+    - name: client
+      port: 2181
+    - name: peer
+      port: 2888
+    - name: leader-election
+      port: 3888
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: crawler
+spec:
+  serviceName: zookeeper       # ties pods to the headless Service for stable DNS
+  replicas: 1                  # bump to 3 for HA (odd numbers only, for quorum)
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: zookeeper:3.9.3
+          ports:
+            - { containerPort: 2181, name: client }
+            - { containerPort: 2888, name: peer }
+            - { containerPort: 3888, name: leader-election }
+          env:
+            - name: ZOO_STANDALONE_ENABLED
+              value: "true"                 # set "false" when replicas > 1
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: datalog, mountPath: /datalog }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { memory: "512Mi" }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 2Gi } }
+    - metadata:
+        name: datalog
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 2Gi } }

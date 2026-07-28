@@ -1,0 +1,39 @@
+# storm.yaml consumed by every Storm daemon (nimbus, supervisor, ui).
+# The apache/storm image reads its config from $STORM_CONF_DIR/storm.yaml
+# (default /conf/storm.yaml). We mount this file there via subPath so we keep
+# the image's other /conf files (logback, etc.) intact.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storm-config
+  namespace: crawler
+data:
+  storm.yaml: |
+    # --- Cluster coordination ---------------------------------------------
+    # Zookeeper is reached through its headless Service. One entry per ZK node;
+    # scale this list if you grow the ensemble to 3/5 nodes.
+    storm.zookeeper.servers:
+      - "zookeeper-0.zookeeper.crawler.svc.cluster.local"
+
+    # Where supervisors find the master. Use the StatefulSet's stable pod DNS
+    # so a nimbus restart keeps the same address.
+    nimbus.seeds: ["nimbus-0.nimbus.crawler.svc.cluster.local"]
+
+    # --- Local working dir -------------------------------------------------
+    # Backed by a PVC on nimbus (topology jars must survive restarts) and by an
+    # emptyDir on supervisors (they re-download from nimbus, so it's throwaway).
+    storm.local.dir: "/data"
+
+    # --- Supervisor worker slots ------------------------------------------
+    # Each port = one worker slot = one JVM. topology.workers in crawler-conf
+    # is 1, so a single supervisor with these two slots is plenty of headroom.
+    supervisor.slots.ports:
+      - 6700
+      - 6701
+
+    # Give nimbus a moment before UI/supervisors hammer it.
+    nimbus.thrift.max_buffer_size: 20480000
+
+    # Bind daemons on all interfaces inside the pod.
+    storm.health.check.dir: "healthchecks"
+    storm.health.check.timeout.ms: 5000

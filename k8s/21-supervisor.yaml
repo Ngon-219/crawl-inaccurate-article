@@ -1,0 +1,79 @@
+# Storm Supervisor — the worker host. It runs the actual topology worker JVMs
+# (spout + bolts), and inside those JVMs the EMBEDDED Playwright Chromium used
+# to render CSR pages. This is the only component that needs the custom image
+# (base storm + our JAR's Playwright browser baked in).
+#
+# WHY Deployment (not StatefulSet):
+#   * Supervisors are stateless/fungible. storm.local.dir here is a scratch
+#     cache — a supervisor re-downloads the topology JAR from Nimbus on start,
+#     so there is nothing to persist. emptyDir is correct; no PVC needed.
+#   * They have no stable identity requirement: Nimbus discovers supervisors
+#     dynamically through Zookeeper by heartbeat, not by a fixed DNS name.
+#     Nothing dials a specific supervisor.
+#   * We want them fungible and horizontally scalable: `kubectl scale` to add
+#     capacity, rolling-replace freely. That is exactly a Deployment's model.
+#
+# NOTE on scaling: adding supervisor replicas only helps if the topology asks
+# for more workers. crawler-conf.yaml sets topology.workers: 1, so a single
+# worker slot is used no matter how many supervisors run. To actually parallelize
+# across nodes, raise topology.workers (and bolt parallelism) and resubmit.
+#
+# Workers inherit the supervisor container's environment, so MONGO_URI set here
+# reaches the MongoIndexerBolt JVM.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supervisor
+  namespace: crawler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supervisor
+  template:
+    metadata:
+      labels:
+        app: supervisor
+    spec:
+      containers:
+        - name: supervisor
+          # Custom image built from k8s/Dockerfile (storm + Playwright Chromium).
+          image: inaccurate-article-crawler:1.0
+          imagePullPolicy: IfNotPresent
+          args: ["storm", "supervisor"]
+          env:
+            # Where the baked-in Chromium lives (see Dockerfile). Playwright reads this.
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: "/opt/ms-playwright"
+            # Mongo connection string -> inherited by worker JVMs -> MongoIndexerBolt.
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef: { name: mongo-credentials, key: MONGO_URI }
+          ports:
+            - { containerPort: 6700 }
+            - { containerPort: 6701 }
+          volumeMounts:
+            - name: storm-config
+              mountPath: /conf/storm.yaml
+              subPath: storm.yaml
+            - name: data
+              mountPath: /data
+            # /dev/shm too small by default for Chromium; back it with memory.
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            # Sized for 2 worker slots (each -Xmx2g) plus a headless Chromium.
+            # Chromium is memory-hungry; do not under-provision the limit or the
+            # OOM killer will reap workers mid-render.
+            requests: { cpu: "500m", memory: "3Gi" }
+            limits:   { memory: "6Gi" }
+      volumes:
+        - name: storm-config
+          configMap:
+            name: storm-config
+        - name: data
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi

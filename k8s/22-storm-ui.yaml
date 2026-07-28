@@ -1,0 +1,58 @@
+# Storm UI — read-only web dashboard (topology status, bolt throughput, worker
+# logs links, capacity). Talks to Nimbus over Thrift.
+#
+# WHY Deployment: it holds no state. It's a stateless read view of Nimbus, so it
+# scales/restarts freely and is fronted by a normal load-balanced Service.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storm-ui
+  namespace: crawler
+  labels:
+    app: storm-ui
+spec:
+  type: ClusterIP          # use `kubectl port-forward` to reach it (see README).
+  selector:
+    app: storm-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storm-ui
+  namespace: crawler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: storm-ui
+  template:
+    metadata:
+      labels:
+        app: storm-ui
+    spec:
+      containers:
+        - name: storm-ui
+          image: storm:2.8.8
+          args: ["storm", "ui"]
+          ports:
+            - { containerPort: 8080, name: http }
+          volumeMounts:
+            - name: storm-config
+              mountPath: /conf/storm.yaml
+              subPath: storm.yaml
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { memory: "512Mi" }
+      volumes:
+        - name: storm-config
+          configMap:
+            name: storm-config
