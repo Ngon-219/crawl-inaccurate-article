@@ -1,0 +1,306 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License. You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Custom configuration for StormCrawler
+# This is used to override the default values from crawler-default.xml and provide additional ones
+# for your custom components.
+# Use this file with the parameter -conf when launching your extension of ConfigurableTopology.
+# This file does not contain all the key values but only the most frequently used ones. See crawler-default.xml for an extensive list.
+
+config:
+  topology.workers: 1
+  topology.message.timeout.secs: 300
+  topology.max.spout.pending: 1000
+  topology.debug: false
+
+  fetcher.threads.number: 50
+  fetcher.server.delay: 0.0
+
+  # override the JVM parameters for the workers
+  topology.worker.childopts: "-Xmx2g -Djava.net.preferIPv4Stack=true"
+
+  # mandatory when using Flux
+  topology.kryo.register:
+    - org.apache.stormcrawler.Metadata
+    - org.apache.stormcrawler.persistence.Status
+
+  # Lists the metadata to transfer to outlinks
+  # Used by Fetcher and SiteMapParser for redirections,
+  # discovered links, passing cookies to child pages, etc.
+  # These are also persisted for the parent document (see below).
+  # Allows wildcards, eg. "follow.*" transfers all metadata starting with "follow.".
+  # metadata.transfer:
+  # - customMetadataName
+
+  # Lists the metadata to persist to storage
+  # These are not transferred to the outlinks. Also allows wildcards, eg. "follow.*".
+  #  metadata.persist:
+  #   - _redirTo
+  #   - error.cause
+  #   - error.source
+  #   - isSitemap
+  #   - isFeed
+  #   - "needs_headless"
+
+  # Metadata to copy onto discovered outlinks. Kept empty on purpose: the
+  # SSR/CSR routing flag (fetch.with) must NOT be inherited by child URLs —
+  # each URL is detected on its own content.
+  # metadata.transfer:
+  #  - customMetadataName
+
+  # Agent name info - given here as an example. Do not be an anonynmous coward, use your real information!
+  # The full user agent value sent as part of the HTTP requests
+  # is built from the elements below. Only the agent.name is mandatory,
+  # it is also used to parse the robots.txt directives.
+
+  # The agent name must be compliant with RFC 9309 (section 2.2.1)
+  # i.e. it MUST contain only uppercase and lowercase letters ("a-z" and "A-Z), underscores ("_"), and hyphens ("-")
+  http.agent.name: "inaccurate-article-crawler"
+  # version of your crawler
+  http.agent.version: "1.0"
+  # description of what it does
+  http.agent.description: "crawler for inaccurate article"
+  # URL webmasters can go to to learn about it
+  http.agent.url: "http://localhost"
+  # Finally, an email so that they can get in touch with you
+  http.agent.email: "vucongngon219@gmail.com"
+
+  #  http.protocol.implementation: "org.apache.stormcrawler.protocol.okhttp.HttpProtocol"
+  #  https.protocol.implementation: "org.apache.stormcrawler.protocol.okhttp.HttpProtocol"
+  # Bỏ qua hoàn toàn các quy tắc trong tệp robots.txt của website
+  #  http.robots.file.skip: true
+
+  # Bỏ qua các chỉ thị robots trong HTTP Headers (X-Robots-Tag nếu có)
+  #  http.robots.headers.skip: true
+
+  # Bỏ qua các chỉ thị robots trong mã HTML (Meta tags như <meta name="robots" content="noindex">)
+  #  http.robots.meta.skip: true
+
+  # Không xóa các liên kết khi trang web đánh dấu là noFollow
+  #  robots.noFollow.strict: false
+
+  #  fetch.server.delay: 0.0
+
+  # Bỏ qua việc kiểm tra robots.txt
+  http.robots.file: ""
+
+  # Cấu hình để trình parser không quan tâm đến thẻ meta robots trên các trang
+  # (Ví dụ: <meta name="robots" content="noindex,nofollow">)
+  robots.noindex.policy: "ignore"
+  # The maximum number of bytes for returned HTTP response bodies.
+  # The fetched page will be trimmed to 65KB in this case
+  # Set -1 to disable the limit.
+  http.content.limit: -1
+
+  urlfrontier.host: "localhost"
+  urlfrontier.port: 7071
+
+  urlfrontier.max.buckets: 100
+  urlfrontier.max.urls.per.bucket: 1000  # Tăng từ 10 lên 1000
+
+  sitemap.discovery: false
+
+  # FetcherBolt queue dump => comment out to activate
+  # if a file exists on the worker machine with the corresponding port number
+  # the FetcherBolt will log the content of its internal queues to the logs
+  # fetcherbolt.queue.debug.filepath: "/tmp/fetcher-dump-{port}"
+
+  parsefilters.config.file: "parsefilters.json"
+  urlfilters.config.file: "urlfilters.json"
+  jsoup.filters.config.file: "jsoupfilters.json"
+
+  # revisit a page daily (value in minutes)
+  # set it to -1 to never refetch a page
+  fetchInterval.default: 10080
+
+  # revisit a page with a fetch error after 2 hours (value in minutes)
+  # set it to -1 to never refetch a page
+  fetchInterval.fetch.error: 0
+
+  # never revisit a page with an error (or set a value in minutes)
+  fetchInterval.error: 120
+
+  # set to true if you don't need any text to be extracted by JSoup
+  textextractor.no.text: false
+
+  # text extraction for JSoupParserBolt
+  # No include.pattern on purpose: extract the full page text on any site.
+  # This keeps the crawler generic (works for arbitrary sites, not just news
+  # articles) and lets JsRenderingDetector's thin-content heuristic work
+  # correctly. Add site-specific include patterns only if you narrow the scope.
+
+  textextractor.exclude.tags:
+    - STYLE
+    - SCRIPT
+
+  # needed for parsing with Tika
+  jsoup.treat.non.html.as.error: false
+
+  # restricts the documents types to be parsed with Tika
+  parser.mimetype.whitelist:
+    - application/.+word.*
+    - application/.+excel.*
+    - application/.+powerpoint.*
+    - application/.*pdf.*
+
+  # Tika parser configuration file
+  parse.tika.config.file: "tika-config.xml"
+
+  # custom fetch interval to be used when a document has the key/value in its metadata
+  # and has been fetched successfully (value in minutes)
+  # fetchInterval.FETCH_ERROR.isFeed=true: 30
+  # fetchInterval.isFeed=true: 10
+
+  # configuration for the classes extending AbstractIndexerBolt
+  # indexer.md.filter: "someKey=aValue"
+  indexer.url.fieldname: "url"
+  indexer.text.fieldname: "content"
+  indexer.canonical.name: "canonical"
+  # How to convert metadata key values into fields for indexing
+  #
+  # if no alias is specified with =alias, the key value is used
+  # for instance below, _domain_ and _format_ will be used
+  # as field names, whereas _title_ will be used for _parse.title_.
+  # You can specify the index of the value to store from the values array
+  # by using the _key[index]_ format, e.g. _parse.title[0]_ would try to
+  # get the first value for the metadata _parse.title_ (which is the default anyway).
+  # Finally, you can use a glob (*) to match all the keys, e.g. _parse.*_ would
+  # index all the keys with _parse_ as a prefix. Note that in that case, you can't
+  # specify an alias with =, nor can you specify an index.
+  indexer.md.mapping:
+    - parse.title=title
+    - parse.keywords=keywords
+    - parse.description=description
+    - domain
+    - format
+
+  # Kích hoạt tính năng Multi-Proxy có sẵn của StormCrawler
+  #  http.proxy.manager.class: "org.apache.stormcrawler.proxy.MultiProxyManager"
+  #
+  #  # Trỏ tới file chứa danh sách proxy của bạn (nằm trong thư mục resources)
+  #  http.proxy.file: "proxies.txt"
+  #
+  #  # Chọn thuật toán đảo proxy (Load Balancing)
+  #  http.proxy.rotation: "ROUND_ROBIN"
+  #  http.proxy.host: "192.168.104.52"
+  #  http.proxy.port: 8141
+
+  #  http.proxy.host: "172.16.2.205"
+  #  http.proxy.port: 3128
+  #  http.proxy.username: "ngonvc"
+  #  http.proxy.password: "Viettel219@"
+  http.proxy.manager: "org.apache.stormcrawler.proxy.MultiProxyManager"
+  http.proxy.file: "proxies.txt"
+  http.proxy.rotation: "ROUND_ROBIN"
+  http.trust.everything: true
+
+  http.timeout: 30000
+  http.robots.timeout: 30000
+  http.min.delay: 2000
+
+  # Metrics consumers:
+  topology.metrics.consumer.register:
+    - class: "org.apache.storm.metric.LoggingMetricsConsumer"
+      parallelism.hint: 1
+
+  # Thêm vào crawler-conf.yaml
+  http.headers:
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    "Accept-Language": "en-US,en;q=0.5"
+    "Referer": "https://www.google.com/"
+    "Upgrade-Insecure-Requests": "1"
+
+  parser.extract.links: true
+  # Cho phép lưu trữ và truyền metadata liên quan đến HTTP Headers
+  metadata.track.depth: true
+  #  metadata.transfer:
+  #    - "strict"
+  signer.class: "org.apache.stormcrawler.util.TextProfileSignature"
+
+  # ------------------------------------------------------------------
+  # SSR + CSR auto-routing (StormCrawler 3.6 built-ins)
+  #
+  # DelegatorProtocol picks a sub-protocol per URL based on metadata:
+  #   - if fetch.with=playwright  -> render with Playwright (headless browser)
+  #   - otherwise                 -> plain HTTP via okhttp (cheap, good for SSR)
+  #
+  # The flag is set by JsRenderingDetector (parsefilters.json) when a page
+  # looks client-side rendered, persisted in URLFrontier, and consumed on the
+  # next fetch. See JsRenderingRedirectionBolt in crawler.flux for the refetch.
+  # ------------------------------------------------------------------
+  http.protocol.implementation: "org.apache.stormcrawler.protocol.DelegatorProtocol"
+  https.protocol.implementation: "org.apache.stormcrawler.protocol.DelegatorProtocol"
+
+  protocol.delegator.config:
+    - className: "org.apache.stormcrawler.protocol.playwright.HttpProtocol"
+      filters:
+        render: "playwright"
+    # default (must be last and have no filters)
+    - className: "org.apache.stormcrawler.protocol.okhttp.HttpProtocol"
+
+  # Routing metadata key/value used by JsRenderingDetector (set on CSR pages)
+  # and JsRenderingRedirectionBolt (consumes it). NOTE: the key must NOT contain
+  # a dot — DefaultScheduler parses `fetchInterval.<key>=<value>` with a regex
+  # that treats a dotted segment as a Status enum name (the built-in default
+  # `fetch.with` would be parsed as Status "fetch" and crash the worker).
+  playwright.redirect.metadata.key: "render"
+  playwright.redirect.metadata.value: "playwright"
+
+  # Playwright runs an EMBEDDED headless Chromium inside the worker process.
+  # StormCrawler holds one long-lived browser connection for the bolt's whole
+  # lifetime, which is incompatible with session-pooling proxies like
+  # browserless (they kill the connection on a per-job timeout -> TargetClosedError).
+  # Embedded launch has no such timeout and guarantees the browser version
+  # matches the bundled driver.
+  #   - Local dev: `playwright install chromium` puts the browser in the host
+  #     cache (restart-crawler.sh does this automatically).
+  #   - K8s/prod: bake the browser into the worker image (RUN playwright install
+  #     --with-deps chromium) so every worker pod has it.
+  # To use a remote browser pool instead, set playwright.remote.ws to a real
+  # Playwright server (`playwright run-server`) whose version matches 1.60.0 —
+  # do NOT point playwright.cdp.url at browserless.
+  # playwright.cdp.url: "http://localhost:9222"
+  playwright.page.actions.config.file: "playwright-actions.json"
+  playwright.load.event: "load"
+  # Don't download heavy assets we don't need for text extraction.
+  playwright.skip.resource.types:
+    - image
+    - media
+    - font
+
+  # Revisit cadence (minutes) for pages flagged render=playwright. This value is
+  # coupled two ways because the `render` flag persists on the URL:
+  #   - it is how soon a newly-detected CSR page gets its first Playwright render
+  #     (the redirect bolt reschedules the okhttp stub with this interval), and
+  #   - it is how often that page is re-rendered thereafter.
+  # 5 min = CSR pages render promptly during a crawl without hammering. Raise it
+  # (e.g. 1440 = daily) once your initial crawl is done to cut re-render load.
+  # NOTE: the metadata key must stay dot-free (see playwright.redirect.metadata.key
+  # above) — DefaultScheduler parses fetchInterval.<key>=<value> with a regex that
+  # would treat a dotted segment as a Status enum and crash the worker.
+  fetchInterval.render=playwright: 5
+
+  # Persist the routing decision so it survives to the next fetch.
+  metadata.persist:
+    - "render"
+    - "render.reason"
+  playwright.skip.browser.download: true
+
+  # 2. Chỉ định dùng Chrome/Chromium cài sẵn trên Linux
+  # Nếu máy bạn có Google Chrome:
+  playwright.browser.launch.channel: "chrome"
+  playwright.browser.launch.executablePath: "/usr/bin/google-chrome"
+
+

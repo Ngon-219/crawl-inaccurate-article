@@ -1,0 +1,150 @@
+# =========================================================
+# Supervisor — worker node, nơi thật sự chạy Bolt/Spout của
+# StormCrawler (Fetcher, Parser...).
+#
+# HA ở đây = phân tán đều trên nhiều node. Supervisor chết thì
+# Nimbus tự phân bổ lại task sang supervisor còn sống, nhưng
+# chỉ khi TỔNG SỐ SLOT còn lại đủ chỗ -> luôn để dư capacity.
+# =========================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: supervisor
+  namespace: crawler-bcnn
+  labels:
+    app: supervisor
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: supervisor
+  ports:
+    - name: thrift
+      port: 6628
+      targetPort: 6628
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: supervisor-pdb
+  namespace: crawler-bcnn
+spec:
+  # Với 3 replica, cho phép mất tối đa 1 -> luôn còn >=2 supervisor
+  # đủ slot gánh task khi node maintenance.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: supervisor
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: supervisor
+  namespace: crawler-bcnn
+spec:
+  serviceName: supervisor
+  replicas: 3          # <-- tăng để scale ngang việc crawl
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: supervisor
+  template:
+    metadata:
+      labels:
+        app: supervisor
+    spec:
+      affinity:
+        podAntiAffinity:
+          # preferred (không phải required) vì supervisor thường có
+          # nhiều replica hơn số node — required sẽ khiến pod thừa
+          # kẹt Pending mãi. Scheduler vẫn ưu tiên rải đều.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: supervisor
+                topologyKey: "kubernetes.io/hostname"
+      # Rải đều supervisor across node, lệch tối đa 1 pod giữa các node.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "kubernetes.io/hostname"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: supervisor
+      initContainers:
+        # Chờ có ÍT NHẤT 1 nimbus sống (không cần cả 2)
+        - name: wait-nimbus
+          image: hub.vtcc.vn:8989/busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for at least one nimbus..."
+              until nc -z -w 2 nimbus-0.nimbus.crawler-bcnn.svc.cluster.local 6627 \
+                 || nc -z -w 2 nimbus-1.nimbus.crawler-bcnn.svc.cluster.local 6627; do
+                echo "no nimbus yet, retrying..."
+                sleep 3
+              done
+              echo "Nimbus OK"
+      containers:
+        - name: supervisor
+          image: hub.vtcc.vn:8989/storm:2.6.2   # PHẢI cùng version với Nimbus
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              cp /conf-base/storm.yaml /conf/storm.yaml
+              echo "storm.local.hostname: \"$(hostname -f)\"" >> /conf/storm.yaml
+              exec storm supervisor
+          ports:
+            - containerPort: 6700
+            - containerPort: 6701
+            - containerPort: 6702
+            - containerPort: 6703
+          # 4 slot (supervisor.slots.ports) x 2GB (worker.childopts)
+          # = 8GB cho worker + overhead cho tiến trình supervisor.
+          resources:
+            requests:
+#              cpu: "1"
+              memory: "9Gi"
+            limits:
+#              cpu: "4"
+              memory: "10Gi"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "ps aux | grep -v grep | grep -q daemon.supervisor.Supervisor"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "ps aux | grep -v grep | grep -q daemon.supervisor.Supervisor"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: conf-base
+              mountPath: /conf-base
+            - name: conf-writable
+              mountPath: /conf
+            - name: storm-local
+              mountPath: /storm-local
+      # Cho worker thời gian shutdown sạch, tránh mất tuple đang xử lý
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: conf-base
+          configMap:
+            name: storm-conf
+        - name: conf-writable
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: storm-local
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

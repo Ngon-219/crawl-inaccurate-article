@@ -1,0 +1,14 @@
+.idea/
+target/
+*.jar
+*.class
+
+logs/
+*.log
+*.json
+*.csv
+*.sql
+
+.docker_home/
+node_modules/
+.git/

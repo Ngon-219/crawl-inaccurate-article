@@ -1,0 +1,55 @@
+services:
+  zookeeper:
+    image: hub.vtcc.vn:8989/zookeeper:3.9.3
+    container_name: zookeeper
+    restart: always
+
+  nimbus:
+    image: hub.vtcc.vn:8989/storm:latest
+    container_name: nimbus
+    hostname: nimbus
+    command: storm nimbus
+    depends_on:
+      - zookeeper
+    restart: always
+
+  supervisor:
+    image: hub.vtcc.vn:8989/storm:latest
+    container_name: supervisor
+    command: storm supervisor -c worker.childopts=-Xmx2g
+    depends_on:
+      - nimbus
+      - zookeeper
+    restart: always
+
+  ui:
+    image: hub.vtcc.vn:8989/storm:latest
+    container_name: ui
+    command: storm ui
+    depends_on:
+      - nimbus
+    restart: always
+    ports:
+      - "8080:8080"
+
+  urlfrontier:
+    image: hub.vtcc.vn:8989/crawlercommons/url-frontier:latest
+    container_name: urlfrontier
+    restart: always
+    ports:
+      - "7071:7071"
+
+  mongo:
+    image: hub.vtcc.vn:8989/mongo:latest
+    container_name: mongoDb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

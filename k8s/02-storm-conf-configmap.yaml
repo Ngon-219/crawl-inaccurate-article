@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storm-conf
+  namespace: crawler-bcnn
+data:
+  storm.yaml: |
+    # =====================================================
+    # ZOOKEEPER — liệt kê ĐỦ TỪNG POD (không dùng tên Service
+    # chung) để Storm client tự failover sang node còn sống
+    # khi 1 trong 3 node Zookeeper chết.
+    # =====================================================
+    storm.zookeeper.servers:
+      - "zookeeper-0.zookeeper.crawler-bcnn.svc.cluster.local"
+      - "zookeeper-1.zookeeper.crawler-bcnn.svc.cluster.local"
+      - "zookeeper-2.zookeeper.crawler-bcnn.svc.cluster.local"
+    storm.zookeeper.port: 2181
+    storm.zookeeper.retry.times: 5
+    storm.zookeeper.retry.interval: 1000
+    storm.zookeeper.session.timeout: 20000
+    storm.zookeeper.connection.timeout: 15000
+
+    # =====================================================
+    # NIMBUS HA — khai báo ĐỦ CẢ 2 nimbus. Storm tự bầu leader
+    # qua Zookeeper; nimbus còn lại đứng standby và tiếp quản
+    # ngay khi leader chết.
+    # =====================================================
+    nimbus.seeds:
+      - "nimbus-0.nimbus.crawler-bcnn.svc.cluster.local"
+      - "nimbus-1.nimbus.crawler-bcnn.svc.cluster.local"
+
+    # BẮT BUỘC cho Nimbus HA: topology jar/conf phải được nhân bản
+    # sang >= 2 nimbus trước khi topology được coi là submit xong.
+    # Nếu để mặc định (1), leader chết là mất luôn code topology
+    # -> nimbus standby lên thay nhưng không có jar để chạy.
+    topology.min.replication.count: 2
+    topology.max.replication.wait.time.sec: 60
+    nimbus.code.sync.freq.secs: 120
+
+    storm.local.dir: "/storm-local"
+
+    # =====================================================
+    # SUPERVISOR — số slot (worker process) mỗi pod chạy được.
+    # Mỗi slot ~ 1 JVM worker -> tính RAM request/limit theo số này.
+    # =====================================================
+    supervisor.slots.ports:
+      - 6700
+      - 6701
+      - 6702
+      - 6703
+
+    # RAM mỗi worker JVM. 4 slot x 2GB = 8GB -> khớp với limit
+    # memory của supervisor pod bên 04-supervisor.yaml.
+    worker.childopts: "-Xmx2048m"
+
+    supervisor.worker.timeout.secs: 30
+    supervisor.worker.start.timeout.secs: 120
+
+    # =====================================================
+    # TOPOLOGY — cấu hình liên quan tới khả năng chịu lỗi
+    # =====================================================
+    # Acker đảm bảo tuple được xử lý lại nếu worker chết giữa chừng.
+    # Để 0 là tắt reliability -> mất URL khi có sự cố. Giữ >= 1.
+    topology.acker.executors: 2
+    topology.message.timeout.secs: 300
+    topology.max.spout.pending: 500
+
+    ui.port: 8080
+    topology.debug: false

@@ -1,0 +1,5 @@
+.docker_home
+.idea
+.git
+
+*.log

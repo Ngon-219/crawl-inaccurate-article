@@ -1,0 +1,277 @@
+# =========================================================
+# MongoDB — Replica Set 3 member (HA thật, chịu được 1 node chết
+# vẫn giữ được quorum để bầu PRIMARY).
+#
+# KIẾN TRÚC:
+#   mongo-0 / mongo-1 / mongo-2  -> 1 PRIMARY + 2 SECONDARY
+#   Client (StormCrawler) kết nối qua connection string liệt kê
+#   đủ 3 member + replicaSet=rs0 -> driver TỰ FAILOVER khi
+#   PRIMARY chết. Đây là điểm mấu chốt, không dùng Service ClusterIP.
+#
+# LƯU Ý: replica set BẮT BUỘC phải chạy rs.initiate() một lần
+# sau khi 3 pod lên -> xử lý bằng Job ở cuối file này.
+# =========================================================
+
+---
+# ---------------------------------------------------------
+# Secret: credential + keyFile (dùng cho internal auth giữa
+# các member của replica set).
+#
+# TẠO keyFile TRƯỚC KHI APPLY:
+#   openssl rand -base64 756 > mongo-keyfile
+#   kubectl create secret generic mongodb-secret \
+#     --from-literal=username=admin \
+#     --from-literal=password='<đổi-mật-khẩu-mạnh>' \
+#     --from-file=mongo-keyfile \
+#     -n crawler-bcnn
+#
+# Block dưới đây chỉ để tham khảo cấu trúc — NÊN tạo bằng lệnh
+# trên thay vì commit mật khẩu vào git.
+# ---------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+  namespace: crawler-bcnn
+type: Opaque
+stringData:
+  username: "admin"
+  password: "CHANGE_ME_STRONG_PASSWORD"
+  mongo-keyfile: |
+    CHANGE_ME_REPLACE_BANG_NOI_DUNG_openssl_rand_base64_756
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: crawler-bcnn
+  labels:
+    app: mongodb
+spec:
+  clusterIP: None                  # headless -> mongo-0.mongodb.crawler-bcnn.svc.cluster.local
+  publishNotReadyAddresses: true   # cần thiết để các member thấy nhau lúc rs.initiate()
+  selector:
+    app: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: 27017
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mongodb-pdb
+  namespace: crawler-bcnn
+spec:
+  maxUnavailable: 1     # giữ tối thiểu 2/3 member -> luôn bầu được PRIMARY
+  selector:
+    matchLabels:
+      app: mongodb
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: crawler-bcnn
+spec:
+  serviceName: mongodb
+  replicas: 3
+  podManagementPolicy: Parallel   # 3 member khởi động song song
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: mongodb
+              topologyKey: "kubernetes.io/hostname"
+      initContainers:
+        # keyFile mount từ Secret có mode 0444 và owner root -> MongoDB
+        # TỪ CHỐI khởi động ("permissions on keyfile are too open").
+        # Phải copy sang emptyDir rồi chmod 400 + chown mongodb(999).
+        - name: fix-keyfile-permission
+          image: hub.vtcc.vn:8989/busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              cp /secret/mongo-keyfile /keyfile/mongo-keyfile
+              chmod 400 /keyfile/mongo-keyfile
+              chown 999:999 /keyfile/mongo-keyfile
+              echo "keyfile ready"
+          volumeMounts:
+            - name: secret-volume
+              mountPath: /secret
+            - name: keyfile-volume
+              mountPath: /keyfile
+      containers:
+        - name: mongodb
+          image: hub.vtcc.vn:8989/mongo:7.0
+          command:
+            - mongod
+            - "--replSet"
+            - "rs0"
+            - "--bind_ip_all"
+            - "--auth"
+            - "--keyFile"
+            - "/keyfile/mongo-keyfile"
+            - "--dbpath"
+            - "/data/db"
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: password
+          ports:
+            - containerPort: 27017
+              name: mongodb
+          resources:
+            requests:
+              memory: "1Gi"
+            limits:
+              memory: "2Gi"
+          # readiness dùng ping đơn giản (không cần auth) — nếu dùng lệnh
+          # cần quyền, probe sẽ fail trước khi user admin được tạo xong.
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - "--quiet"
+                - "--eval"
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - mongosh
+                - "--quiet"
+                - "--eval"
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: keyfile-volume
+              mountPath: /keyfile
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: secret-volume
+          secret:
+            secretName: mongodb-secret
+            defaultMode: 0400
+            items:
+              - key: mongo-keyfile
+                path: mongo-keyfile
+        - name: keyfile-volume
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi     # tăng theo lượng URL/document dự kiến crawl
+
+---
+# ---------------------------------------------------------
+# Job khởi tạo Replica Set — chạy MỘT LẦN sau khi 3 pod lên.
+# Không có bước này thì mongod chạy nhưng KHÔNG có PRIMARY,
+# mọi lệnh ghi đều fail ("not primary").
+#
+# Job này idempotent: nếu rs đã init rồi thì bỏ qua.
+# ---------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongodb-init-replicaset
+  namespace: crawler-bcnn
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: init-rs
+          image: hub.vtcc.vn:8989/mongo:7.0
+          env:
+            - name: MONGO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: username
+            - name: MONGO_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: password
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              NS=crawler-bcnn
+              H0=mongodb-0.mongodb.$NS.svc.cluster.local
+              H1=mongodb-1.mongodb.$NS.svc.cluster.local
+              H2=mongodb-2.mongodb.$NS.svc.cluster.local
+
+              echo "Chờ cả 3 member sẵn sàng..."
+              for h in $H0 $H1 $H2; do
+                until mongosh --host $h --quiet --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
+                  echo "  chờ $h ..."
+                  sleep 5
+                done
+                echo "  $h OK"
+              done
+
+              echo "Kiểm tra replica set đã init chưa..."
+              if mongosh --host $H0 -u "$MONGO_USER" -p "$MONGO_PASS" \
+                   --authenticationDatabase admin --quiet \
+                   --eval "rs.status().ok" 2>/dev/null | grep -q 1; then
+                echo "Replica set đã tồn tại, bỏ qua."
+                exit 0
+              fi
+
+              echo "Khởi tạo replica set rs0..."
+              mongosh --host $H0 --quiet --eval "
+                rs.initiate({
+                  _id: 'rs0',
+                  members: [
+                    { _id: 0, host: '$H0:27017', priority: 2 },
+                    { _id: 1, host: '$H1:27017', priority: 1 },
+                    { _id: 2, host: '$H2:27017', priority: 1 }
+                  ]
+                })
+              "
+
+              echo "Chờ bầu PRIMARY..."
+              until mongosh --host $H0 --quiet --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true; do
+                sleep 3
+              done
+
+              echo "Replica set đã sẵn sàng:"
+              mongosh --host $H0 -u "$MONGO_USER" -p "$MONGO_PASS" \
+                --authenticationDatabase admin --quiet --eval "rs.status().members.forEach(m => print(m.name, m.stateStr))"

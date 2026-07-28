@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: crawler-bcnn
+  labels:
+    app: zookeeper
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: zookeeper
+  ports:
+    - name: client
+      port: 2181
+      targetPort: 2181
+    - name: peer
+      port: 2888
+      targetPort: 2888
+    - name: leader-election
+      port: 3888
+      targetPort: 3888
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zookeeper-pdb
+  namespace: crawler-bcnn
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: crawler-bcnn
+spec:
+  serviceName: zookeeper
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: zookeeper
+              topologyKey: "kubernetes.io/hostname"
+      initContainers:
+        - name: init-myid
+          image: hub.vtcc.vn:8989/busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              INDEX=$(echo $(hostname) | awk -F'-' '{print $NF}')
+              MY_ID=$(expr $INDEX + 1)
+              echo $MY_ID > /data/myid
+              echo "Set myid to $MY_ID"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: zookeeper
+          image: hub.vtcc.vn:8989/zookeeper:3.9.3
+          env:
+            - name: ZOO_SERVERS
+              value: "server.1=zookeeper-0.zookeeper.crawler-bcnn.svc.cluster.local:2888:3888;2181 server.2=zookeeper-1.zookeeper.crawler-bcnn.svc.cluster.local:2888:3888;2181 server.3=zookeeper-2.zookeeper.crawler-bcnn.svc.cluster.local:2888:3888;2181"
+            - name: ZOO_STANDALONE_ENABLED
+              value: "false"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "ruok,conf,isro,stat"
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 2888
+              name: peer
+            - containerPort: 3888
+              name: leader-election
+          resources:
+            requests:
+#              cpu: "250m"
+              memory: "512Mi"
+            limits:
+#              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: datalog
+              mountPath: /datalog
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+    - metadata:
+        name: datalog
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

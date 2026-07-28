@@ -1,0 +1,141 @@
+# =========================================================
+# Nimbus — HA 2 node. Storm bầu leader qua Zookeeper, nimbus
+# còn lại standby và tiếp quản ngay khi leader chết.
+#
+# LƯU Ý: topology ĐANG CHẠY không bị gián đoạn khi nimbus chết
+# (worker chạy độc lập trên supervisor). Nimbus chỉ cần thiết cho
+# submit/kill/rebalance topology và tái phân bổ khi worker chết.
+# Nhưng mất cả 2 nimbus thì worker chết sẽ KHÔNG được hồi phục.
+# =========================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nimbus
+  namespace: crawler-bcnn
+  labels:
+    app: nimbus
+spec:
+  clusterIP: None                 # headless -> nimbus-0.nimbus.crawler-bcnn.svc.cluster.local
+  publishNotReadyAddresses: true  # cho phép resolve DNS cả khi pod chưa Ready (tránh deadlock bootstrap)
+  selector:
+    app: nimbus
+  ports:
+    - name: thrift
+      port: 6627
+      targetPort: 6627
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nimbus-pdb
+  namespace: crawler-bcnn
+spec:
+  maxUnavailable: 1     # luôn giữ tối thiểu 1 nimbus sống khi drain node
+  selector:
+    matchLabels:
+      app: nimbus
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nimbus
+  namespace: crawler-bcnn
+spec:
+  serviceName: nimbus
+  replicas: 2
+  podManagementPolicy: Parallel   # 2 nimbus khởi động song song, không chờ nhau
+  selector:
+    matchLabels:
+      app: nimbus
+  template:
+    metadata:
+      labels:
+        app: nimbus
+    spec:
+      # 2 nimbus PHẢI nằm trên 2 node khác nhau, nếu không node chết
+      # là mất cả 2 -> HA vô nghĩa.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: nimbus
+              topologyKey: "kubernetes.io/hostname"
+      initContainers:
+        # Chờ ĐỦ QUORUM zookeeper (>=2/3 node) chứ không chỉ 1 node,
+        # tránh nimbus khởi động khi ensemble chưa bầu xong leader.
+        - name: wait-zookeeper-quorum
+          image: hub.vtcc.vn:8989/busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for zookeeper quorum..."
+              until [ $(
+                for i in 0 1 2; do
+                  nc -z -w 2 zookeeper-$i.zookeeper.crawler-bcnn.svc.cluster.local 2181 2>/dev/null && echo ok
+                done | wc -l
+              ) -ge 2 ]; do
+                echo "quorum not ready yet, retrying..."
+                sleep 3
+              done
+              echo "Zookeeper quorum OK"
+      containers:
+        - name: nimbus
+          image: hub.vtcc.vn:8989/storm:2.6.2     # PHẢI khớp version với supervisor + image submit topology
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              cp /conf-base/storm.yaml /conf/storm.yaml
+              # Mỗi pod phải advertise đúng FQDN của chính nó, nếu không
+              # nimbus kia và supervisor không gọi ngược lại được.
+              echo "storm.local.hostname: \"$(hostname -f)\"" >> /conf/storm.yaml
+              exec storm nimbus
+          ports:
+            - containerPort: 6627
+              name: thrift
+          resources:
+            requests:
+#              cpu: "500m"
+              memory: "1Gi"
+            limits:
+#              cpu: "1"
+              memory: "2Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 6627
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6627
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: conf-base
+              mountPath: /conf-base
+            - name: conf-writable
+              mountPath: /conf
+            - name: storm-local
+              mountPath: /storm-local
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: conf-base
+          configMap:
+            name: storm-conf
+        - name: conf-writable
+          emptyDir: {}
+  volumeClaimTemplates:
+    # PVC riêng cho từng nimbus — nơi lưu bản sao topology jar.
+    # Đây là lý do topology.min.replication.count: 2 phải được bật.
+    - metadata:
+        name: storm-local
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

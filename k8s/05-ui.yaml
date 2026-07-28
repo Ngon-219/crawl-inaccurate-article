@@ -1,0 +1,93 @@
+# =========================================================
+# Storm UI — 2 replica để không mất khả năng quan sát cluster
+# khi 1 pod/node chết. UI là stateless nên scale rất rẻ.
+# =========================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: storm-ui
+  namespace: crawler-bcnn
+spec:
+  type: ClusterIP     # đổi LoadBalancer/NodePort hoặc dùng Ingress nếu cần truy cập từ ngoài
+  selector:
+    app: storm-ui
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: storm-ui-pdb
+  namespace: crawler-bcnn
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: storm-ui
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storm-ui
+  namespace: stormcrawler
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: storm-ui
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0     # rolling update không làm gián đoạn UI
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: storm-ui
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: storm-ui
+                topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: ui
+          image: storm:2.6.2
+          command: ["storm", "ui"]
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/cluster/summary
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/v1/cluster/summary
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: conf
+              mountPath: /conf/storm.yaml
+              subPath: storm.yaml
+      volumes:
+        - name: conf
+          configMap:
+            name: storm-conf

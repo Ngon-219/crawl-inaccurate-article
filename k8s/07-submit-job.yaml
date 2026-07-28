@@ -1,0 +1,72 @@
+# =========================================================
+# Job submit topology — chạy 1 lần, không phải Deployment.
+# Sau khi Job xong, topology chạy độc lập trên cluster; xoá Job
+# không ảnh hưởng topology đang chạy.
+#
+# HA ở đây = retry khi submit gặp nimbus đang failover, và chờ
+# cho tới khi nimbus thật sự sẵn sàng nhận jar.
+# =========================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: submit-stormcrawler-topology
+  namespace: crawler-bcnn
+spec:
+  backoffLimit: 5           # retry nếu submit fail (VD trúng lúc nimbus đang bầu lại leader)
+  ttlSecondsAfterFinished: 3600   # tự dọn Job sau 1h
+  template:
+    spec:
+      restartPolicy: Never
+      # Bỏ comment nếu registry hub.vtcc.vn:8999 cần login
+      # imagePullSecrets:
+      #   - name: regcred
+      initContainers:
+        - name: wait-nimbus
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for nimbus..."
+              until nc -z -w 2 nimbus-0.nimbus.stormcrawler.svc.cluster.local 6627 \
+                 || nc -z -w 2 nimbus-1.nimbus.stormcrawler.svc.cluster.local 6627; do
+                sleep 3
+              done
+              # Chờ thêm để nimbus bầu xong leader trước khi submit
+              sleep 15
+              echo "Nimbus OK"
+      containers:
+        - name: submit
+          image: hub.vtcc.vn:8989/vtcc/ptdl/inaccurate-article-crawler:1.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              cp /conf-base/storm.yaml /conf/storm.yaml
+              export STORM_CONF_DIR=/conf
+
+              # Retry thủ công phòng trường hợp nimbus failover giữa chừng
+              for attempt in 1 2 3; do
+                echo "Submit attempt $attempt..."
+                if storm jar /apache-storm/crawler.jar \
+                     org.apache.storm.flux.Flux --remote /apache-storm/crawler.flux \
+                     --filter /apache-storm/crawler-conf.yaml; then
+                  echo "Submit thành công"
+                  exit 0
+                fi
+                echo "Submit fail, chờ 20s rồi thử lại..."
+                sleep 20
+              done
+              echo "Submit thất bại sau 3 lần thử"
+              exit 1
+          volumeMounts:
+            - name: conf-base
+              mountPath: /conf-base
+            - name: conf-writable
+              mountPath: /conf
+      volumes:
+        - name: conf-base
+          configMap:
+            name: storm-conf
+        - name: conf-writable
+          emptyDir: {}
